@@ -1,11 +1,12 @@
 import telebot
-import sqlite3
+import psycopg2
 import os
 import time
 
 # ==========================================
 # ВАШИ НАСТРОЙКИ (УЖЕ ЗАПОЛНЕНЫ ВЕРНО)
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
+DATABASE_URL = os.getenv('DATABASE_URL') # Берется из Infrlo
 ADMIN_ID = 529969683 
 ALLOWED_CHAT_ID = -1004490896933 
 ALLOWED_TOPIC_ID = 9 
@@ -13,12 +14,13 @@ ALLOWED_TOPIC_ID = 9
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- БАЗА ДАННЫХ ---
+# --- ПОДКЛЮЧЕНИЕ К БАЗЕ ДАННЫХ (POSTGRESQL) ---
 def init_db():
-    conn = sqlite3.connect('stalker_rp.db')
+    conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
+    # Для облачной базы ID должен быть BIGINT
     cursor.execute('''CREATE TABLE IF NOT EXISTS players (
-        user_id INTEGER PRIMARY KEY,
+        user_id BIGINT PRIMARY KEY,
         char_name TEXT DEFAULT 'Безымянный',
         faction TEXT DEFAULT 'Одиночка',
         reputation INTEGER DEFAULT 0,
@@ -33,24 +35,23 @@ def init_db():
 init_db()
 
 def get_player(user_id):
-    conn = sqlite3.connect('stalker_rp.db')
+    conn = psycopg2.connect(DATABASE_URL)
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM players WHERE user_id = ?", (user_id,))
+    # В постгресе вместо ? используются %s
+    cursor.execute("SELECT * FROM players WHERE user_id = %s", (user_id,))
     player = cursor.fetchone()
     if not player:
-        cursor.execute("INSERT INTO players (user_id) VALUES (?)", (user_id,))
+        cursor.execute("INSERT INTO players (user_id) VALUES (%s)", (user_id,))
         conn.commit()
-        cursor.execute("SELECT * FROM players WHERE user_id = ?", (user_id,))
+        cursor.execute("SELECT * FROM players WHERE user_id = %s", (user_id,))
         player = cursor.fetchone()
     conn.close()
     return player
 
 # --- ПРОВЕРКА НА ЧАТ И ТЕМУ ---
 def is_allowed(message):
-    # Разрешаем работу, если это ЛС от админа (чтобы вы могли тестировать)
     if message.chat.type == 'private' and message.chat.id == ADMIN_ID:
         return True
-    # Разрешаем работу, если это правильная группа И правильная тема
     if message.chat.id == ALLOWED_CHAT_ID and message.message_thread_id == ALLOWED_TOPIC_ID:
         return True
     return False
@@ -125,10 +126,10 @@ def transfer_money(message):
         return
 
     try:
-        conn = sqlite3.connect('stalker_rp.db')
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        cursor.execute(f"UPDATE players SET {currency} = {currency} - ? WHERE user_id = ?", (amount, sender_id))
-        cursor.execute(f"UPDATE players SET {currency} = {currency} + ? WHERE user_id = ?", (amount, receiver_id))
+        cursor.execute(f"UPDATE players SET {currency} = {currency} - %s WHERE user_id = %s", (amount, sender_id))
+        cursor.execute(f"UPDATE players SET {currency} = {currency} + %s WHERE user_id = %s", (amount, receiver_id))
         conn.commit()
         conn.close()
 
@@ -150,9 +151,9 @@ def admin_setname(message):
         name = message.text.split(maxsplit=1)[1]
         target_id = message.reply_to_message.from_user.id
         get_player(target_id)
-        conn = sqlite3.connect('stalker_rp.db')
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        cursor.execute("UPDATE players SET char_name = ? WHERE user_id = ?", (name, target_id))
+        cursor.execute("UPDATE players SET char_name = %s WHERE user_id = %s", (name, target_id))
         conn.commit()
         conn.close()
         bot.reply_to(message, f"✅ Имя изменено на <b>{name}</b>.", parse_mode='HTML')
@@ -167,9 +168,9 @@ def admin_setfaction(message):
         faction = message.text.split(maxsplit=1)[1]
         target_id = message.reply_to_message.from_user.id
         get_player(target_id)
-        conn = sqlite3.connect('stalker_rp.db')
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        cursor.execute("UPDATE players SET faction = ? WHERE user_id = ?", (faction, target_id))
+        cursor.execute("UPDATE players SET faction = %s WHERE user_id = %s", (faction, target_id))
         conn.commit()
         conn.close()
         bot.reply_to(message, f"✅ Группировка изменена на <b>{faction}</b>.", parse_mode='HTML')
@@ -189,9 +190,9 @@ def admin_addmoney(message):
             return bot.reply_to(message, "❌ Доступны валюты: uah, rub, usd, eur")
         target_id = message.reply_to_message.from_user.id
         get_player(target_id)
-        conn = sqlite3.connect('stalker_rp.db')
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        cursor.execute(f"UPDATE players SET {currency} = {currency} + ? WHERE user_id = ?", (amount, target_id))
+        cursor.execute(f"UPDATE players SET {currency} = {currency} + %s WHERE user_id = %s", (amount, target_id))
         conn.commit()
         conn.close()
         bot.reply_to(message, f"✅ Начислено <b>{amount} {currency.upper()}</b> игроку.", parse_mode='HTML')
@@ -206,14 +207,54 @@ def admin_addrep(message):
         amount = int(message.text.split()[1])
         target_id = message.reply_to_message.from_user.id
         get_player(target_id)
-        conn = sqlite3.connect('stalker_rp.db')
+        conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
-        cursor.execute("UPDATE players SET reputation = reputation + ? WHERE user_id = ?", (amount, target_id))
+        cursor.execute("UPDATE players SET reputation = reputation + %s WHERE user_id = %s", (amount, target_id))
         conn.commit()
         conn.close()
         bot.reply_to(message, f"✅ Репутация изменена на <b>{amount}</b>.", parse_mode='HTML')
     except:
         bot.reply_to(message, "Формат: <code>/addrep [число]</code>", parse_mode='HTML')
+
+# --- НОВЫЕ КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ СМЕРТЬЮ ---
+
+@bot.message_handler(commands=['resetplayer'], func=is_allowed)
+def admin_resetplayer(message):
+    if not is_admin(message): return
+    if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
+    try:
+        target_id = message.reply_to_message.from_user.id
+        get_player(target_id)
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        # Обнуляем всё и ставим статус "Мертв"
+        cursor.execute("""UPDATE players SET 
+            char_name = 'Труп', 
+            faction = 'Мертв', 
+            reputation = 0, 
+            uah = 0, rub = 0, usd = 0, eur = 0 
+            WHERE user_id = %s""", (target_id,))
+        conn.commit()
+        conn.close()
+        bot.reply_to(message, "💀 Персонаж убит. Все данные и деньги обнулены. Игрок может начать заново.", parse_mode='HTML')
+    except:
+        bot.reply_to(message, "Ошибка при обнулении.")
+
+@bot.message_handler(commands=['deleteplayer'], func=is_allowed)
+def admin_deleteplayer(message):
+    if not is_admin(message): return
+    if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
+    try:
+        target_id = message.reply_to_message.from_user.id
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        # Полностью удаляем запись из базы
+        cursor.execute("DELETE FROM players WHERE user_id = %s", (target_id,))
+        conn.commit()
+        conn.close()
+        bot.reply_to(message, "🗑 Запись игрока полностью удалена из базы данных НИИЧАЗ.", parse_mode='HTML')
+    except:
+        bot.reply_to(message, "Ошибка при удалении.")
 
 # --- АВТОПЕРЕЗАПУСК ПРИ СБОЕ СЕТИ ---
 print("Терминал ЧЗО запущен и работает...")
