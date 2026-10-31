@@ -5,8 +5,8 @@ import os
 # ==========================================
 # ВАШИ НАСТРОЙКИ (ОБЯЗАТЕЛЬНО ЗАПОЛНИТЬ)
 BOT_TOKEN = os.getenv('BOT_TOKEN') # Берется из настроек Infrlo
-ADMIN_ID = 123456789 # ВАШ ID (узнать у @userinfobot)
-ALLOWED_CHAT_ID = -1001234567890 # ID ВАШЕГО ЧАТА (с минусом)
+ADMIN_ID = 5299699683 # ВАШ ID (узнать у @userinfobot)
+ALLOWED_CHAT_ID = -1004490896933 # ID ВАШЕГО ЧАТА (с минусом)
 # ==========================================
 
 bot = telebot.TeleBot(BOT_TOKEN)
