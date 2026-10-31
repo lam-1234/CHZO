@@ -3,15 +3,15 @@ import sqlite3
 import os
 
 # ==========================================
-# СЮДА ВСТАВЬТЕ ВАШИ ДАННЫЕ:
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-ADMIN_ID = 5299699683  # ВСТАВЬТЕ_СЮДА_ВАШ_ID_ЦИФРАМИ (без кавычек)
+# ВАШИ НАСТРОЙКИ (ОБЯЗАТЕЛЬНО ЗАПОЛНИТЬ)
+BOT_TOKEN = os.getenv('BOT_TOKEN') # Берется из настроек Infrlo
+ADMIN_ID = 123456789 # ВАШ ID (узнать у @userinfobot)
+ALLOWED_CHAT_ID = -1001234567890 # ID ВАШЕГО ЧАТА (с минусом)
 # ==========================================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-
-# Создание базы данных (не трогайте этот блок)
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect('stalker_rp.db')
     cursor = conn.cursor()
@@ -28,9 +28,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 init_db()
-
 
 def get_player(user_id):
     conn = sqlite3.connect('stalker_rp.db')
@@ -45,10 +43,9 @@ def get_player(user_id):
     conn.close()
     return player
 
-
 # --- КОМАНДЫ ДЛЯ ИГРОКОВ ---
 
-@bot.message_handler(commands=['start', 'help'])
+@bot.message_handler(commands=['start', 'help'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def send_welcome(message):
     text = (
         "☢️ <b>Терминал ЧЗО активирован.</b>\n\n"
@@ -56,16 +53,15 @@ def send_welcome(message):
         "/profile - Открыть личное дело (посмотреть баланс)\n"
         "/pay [сумма] [валюта] - Перевести деньги (в ответ на сообщение игрока)\n"
         "Валюты для перевода: uah (гривна), rub (рубль), usd (доллар), eur (евро).\n\n"
-        "⚠️ <i>Конвертация валют проводится только через Администрацию.</i>"
+        "⚠️ <i>Конвертация валют проводится только через Администрацию (НИИЧАЗ).</i>"
     )
     bot.reply_to(message, text, parse_mode='HTML')
 
-
-@bot.message_handler(commands=['profile'])
+@bot.message_handler(commands=['profile'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def show_profile(message):
     user_id = message.from_user.id
     p = get_player(user_id)
-
+    
     text = (
         f"📁 <b>Личное дело сталкера</b>\n\n"
         f"👤 <b>Имя:</b> {p[1]}\n"
@@ -79,8 +75,7 @@ def show_profile(message):
     )
     bot.reply_to(message, text, parse_mode='HTML')
 
-
-@bot.message_handler(commands=['pay'])
+@bot.message_handler(commands=['pay'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def transfer_money(message):
     if not message.reply_to_message:
         bot.reply_to(message, "❌ Ошибка. Чтобы перевести деньги, ответьте (Reply) на сообщение нужного игрока.")
@@ -98,9 +93,7 @@ def transfer_money(message):
         amount = int(args[0])
         currency = args[1].lower()
     except:
-        bot.reply_to(message,
-                     "❌ Неверный формат.\nИспользуйте: <code>/pay [сумма] [валюта]</code>\nПример: <code>/pay 500 rub</code>",
-                     parse_mode='HTML')
+        bot.reply_to(message, "❌ Неверный формат.\nИспользуйте: <code>/pay [сумма] [валюта]</code>\nПример: <code>/pay 500 rub</code>", parse_mode='HTML')
         return
 
     if amount <= 0:
@@ -128,20 +121,16 @@ def transfer_money(message):
         conn.close()
 
         receiver_name = get_player(receiver_id)[1]
-        bot.reply_to(message,
-                     f"✅ Перевод успешен!\nВы перевели <b>{amount} {currency.upper()}</b> сталкеру <b>{receiver_name}</b>.",
-                     parse_mode='HTML')
+        bot.reply_to(message, f"✅ Перевод успешен!\nВы перевели <b>{amount} {currency.upper()}</b> сталкеру <b>{receiver_name}</b>.", parse_mode='HTML')
     except Exception as e:
         bot.reply_to(message, "❌ Ошибка базы данных при переводе.")
 
-
-# --- КОМАНДЫ АДМИНИСТРАТОРА (ТОЛЬКО ДЛЯ ВАС) ---
+# --- КОМАНДЫ АДМИНИСТРАТОРА ---
 
 def is_admin(message):
     return message.from_user.id == ADMIN_ID
 
-
-@bot.message_handler(commands=['setname'])
+@bot.message_handler(commands=['setname'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def admin_setname(message):
     if not is_admin(message): return
     if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
@@ -158,8 +147,7 @@ def admin_setname(message):
     except:
         bot.reply_to(message, "Формат: <code>/setname Имя Фамилия</code> (в ответ на сообщение)", parse_mode='HTML')
 
-
-@bot.message_handler(commands=['setfaction'])
+@bot.message_handler(commands=['setfaction'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def admin_setfaction(message):
     if not is_admin(message): return
     if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
@@ -176,8 +164,7 @@ def admin_setfaction(message):
     except:
         bot.reply_to(message, "Формат: <code>/setfaction Название</code> (в ответ на сообщение)", parse_mode='HTML')
 
-
-@bot.message_handler(commands=['addmoney'])
+@bot.message_handler(commands=['addmoney'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def admin_addmoney(message):
     if not is_admin(message): return
     if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
@@ -197,12 +184,9 @@ def admin_addmoney(message):
         conn.close()
         bot.reply_to(message, f"✅ Начислено <b>{amount} {currency.upper()}</b> игроку.", parse_mode='HTML')
     except:
-        bot.reply_to(message,
-                     "Формат: <code>/addmoney [сумма] [валюта]</code>\nПример: <code>/addmoney 1000 usd</code>",
-                     parse_mode='HTML')
+        bot.reply_to(message, "Формат: <code>/addmoney [сумма] [валюта]</code>\nПример: <code>/addmoney 1000 usd</code>", parse_mode='HTML')
 
-
-@bot.message_handler(commands=['addrep'])
+@bot.message_handler(commands=['addrep'], func=lambda message: message.chat.id == ALLOWED_CHAT_ID)
 def admin_addrep(message):
     if not is_admin(message): return
     if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
@@ -218,7 +202,6 @@ def admin_addrep(message):
         bot.reply_to(message, f"✅ Репутация изменена на <b>{amount}</b>.", parse_mode='HTML')
     except:
         bot.reply_to(message, "Формат: <code>/addrep [число]</code>", parse_mode='HTML')
-
 
 print("Терминал ЧЗО запущен и работает...")
 bot.polling(none_stop=True)
