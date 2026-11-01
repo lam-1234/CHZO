@@ -8,7 +8,7 @@ from telebot import types
 # ВАШИ НАСТРОЙКИ
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 5299699683 
+ADMIN_ID = 529969683 
 ALLOWED_CHAT_ID = -1004490896933 
 ALLOWED_TOPIC_ID = 9 
 # ==========================================
@@ -67,6 +67,9 @@ def is_allowed(message):
         return True
     return False
 
+def is_admin(message): 
+    return message.from_user.id == ADMIN_ID
+
 # --- КОМАНДЫ ИГРОКОВ ---
 
 @bot.message_handler(commands=['start', 'help'], func=is_allowed)
@@ -77,8 +80,9 @@ def send_welcome(message):
         "/create - Создать персонажа\n"
         "/mychars - Список ваших персонажей (переключение)\n"
         "/profile - Посмотреть карточку\n"
-        "/pay [сумма] [валюта] - Перевести деньги\n"
-        "/deletechar - Удалить текущего персонажа"
+        "/pay [сумма] [валюта] [Имя] - Перевести деньги (или ответом на сообщение)\n"
+        "/deletechar - Удалить текущего персонажа\n\n"
+        "Валюты: uah, rub, usd, eur"
     )
     bot.reply_to(message, text, parse_mode='HTML')
 
@@ -188,25 +192,71 @@ def show_profile(message):
     )
     bot.reply_to(message, text, parse_mode='HTML')
 
+# --- СИСТЕМА ПЕРЕВОДОВ ---
+
 @bot.message_handler(commands=['pay'], func=is_allowed)
 def transfer_money(message):
-    if not message.reply_to_message:
-        return bot.reply_to(message, "❌ Ответьте (Reply) на сообщение игрока, которому хотите перевести деньги.")
     sender = get_active_player(message.from_user.id)
-    receiver = get_active_player(message.reply_to_message.from_user.id)
-    if not sender: return bot.reply_to(message, "У вас нет активного персонажа.")
-    if not receiver: return bot.reply_to(message, "У получателя нет активного персонажа.")
+    if not sender:
+        return bot.reply_to(message, "У вас нет активного персонажа. Создайте его через /create")
 
-    try:
-        args = message.text.split()[1:]
-        amount = int(args[0])
-        currency = args[1].lower()
-    except:
-        return bot.reply_to(message, "Формат: <code>/pay [сумма] [валюта]</code>", parse_mode='HTML')
+    # Режим 1: Ответ на сообщение
+    if message.reply_to_message:
+        receiver = get_active_player(message.reply_to_message.from_user.id)
+        if not receiver:
+            return bot.reply_to(message, "У получателя нет активного персонажа.")
+        try:
+            args = message.text.split()[1:]
+            amount = int(args[0])
+            currency = args[1].lower()
+        except:
+            return bot.reply_to(message, "Формат: <code>/pay [сумма] [валюта]</code>", parse_mode='HTML')
+        
+        process_transfer(message, sender, receiver, amount, currency)
 
-    if amount <= 0: return bot.reply_to(message, "Сумма должна быть больше нуля.")
+    # Режим 2: По имени персонажа
+    else:
+        try:
+            parts = message.text.split(maxsplit=3)
+            amount = int(parts[1])
+            currency = parts[2].lower()
+            target_name = parts[3]
+        except:
+            return bot.reply_to(message, "Формат: <code>/pay [сумма] [валюта] [Имя]</code>\nПример: <code>/pay 500 rub Шансон</code>", parse_mode='HTML')
+
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute("SELECT char_id, char_name, user_id FROM characters WHERE LOWER(char_name) = LOWER(%s)", (target_name,))
+        found_chars = cursor.fetchall()
+        conn.close()
+
+        if not found_chars:
+            return bot.reply_to(message, f"❌ Персонаж с именем <b>{target_name}</b> не найден.", parse_mode='HTML')
+
+        if len(found_chars) == 1:
+            char_id = found_chars[0][0]
+            conn = psycopg2.connect(DATABASE_URL)
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM characters WHERE char_id = %s", (char_id,))
+            receiver = cursor.fetchone()
+            conn.close()
+            process_transfer(message, sender, receiver, amount, currency)
+        else:
+            markup = types.InlineKeyboardMarkup()
+            for c in found_chars:
+                markup.add(types.InlineKeyboardButton(f"{c[1]} (ID: {c[0]})", callback_data=f"pp_{c[0]}_{amount}_{currency}"))
+            bot.reply_to(message, f"Найдено несколько персонажей с именем <b>{target_name}</b>. Кому перевести?", reply_markup=markup, parse_mode='HTML')
+
+def process_transfer(message, sender, receiver, amount, currency):
+    if amount <= 0: 
+        return bot.reply_to(message, "Сумма должна быть больше нуля.")
+    
     curr_map = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}
-    if currency not in curr_map: return bot.reply_to(message, "Валюты: uah, rub, usd, eur")
+    if currency not in curr_map: 
+        return bot.reply_to(message, "Валюты: uah, rub, usd, eur")
+
+    if sender[0] == receiver[0]:
+        return bot.reply_to(message, "❌ Вы не можете перевести деньги самому себе.")
 
     if sender[curr_map[currency]] < amount:
         return bot.reply_to(message, "❌ Недостаточно средств.")
@@ -220,11 +270,49 @@ def transfer_money(message):
         conn.close()
         bot.reply_to(message, f"✅ Вы перевели <b>{amount} {currency.upper()}</b> сталкеру <b>{receiver[2]}</b>.", parse_mode='HTML')
     except Exception as e:
-        bot.reply_to(message, "Ошибка базы данных.")
+        bot.reply_to(message, "Ошибка базы данных при переводе.")
 
-# --- КОМАНДЫ АДМИНИСТРАТОРА (С ВЫБОРОМ ПЕРСОНАЖА) ---
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pp_'))
+def handle_player_pay_button(call):
+    data = call.data.split('_')
+    char_id = int(data[1])
+    amount = int(data[2])
+    currency = data[3]
+    user_id = call.from_user.id
 
-def is_admin(message): return message.from_user.id == ADMIN_ID
+    sender = get_active_player(user_id)
+    if not sender:
+        return bot.answer_callback_query(call.id, "У вас нет активного персонажа.")
+
+    conn = psycopg2.connect(DATABASE_URL)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM characters WHERE char_id = %s", (char_id,))
+    receiver = cursor.fetchone()
+    conn.close()
+
+    if not receiver:
+        return bot.answer_callback_query(call.id, "Ошибка: персонаж не найден.")
+
+    if sender[0] == receiver[0]:
+        return bot.answer_callback_query(call.id, "❌ Вы не можете перевести самому себе.")
+
+    curr_map = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}
+    if sender[curr_map[currency]] < amount:
+        return bot.answer_callback_query(call.id, "❌ Недостаточно средств.")
+
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        cursor.execute(f"UPDATE characters SET {currency} = {currency} - %s WHERE char_id = %s", (amount, sender[0]))
+        cursor.execute(f"UPDATE characters SET {currency} = {currency} + %s WHERE char_id = %s", (amount, receiver[0]))
+        conn.commit()
+        conn.close()
+        
+        bot.edit_message_text(f"✅ Успешно переведено <b>{amount} {currency.upper()}</b> сталкеру <b>{receiver[2]}</b>.", call.message.chat.id, call.message.message_id, parse_mode='HTML')
+    except Exception as e:
+        bot.answer_callback_query(call.id, "Ошибка базы данных.")
+
+# --- КОМАНДЫ АДМИНИСТРАТОРА ---
 
 @bot.message_handler(commands=['setfaction'], func=is_allowed)
 def admin_setfaction(message):
