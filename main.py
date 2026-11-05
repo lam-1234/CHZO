@@ -86,7 +86,6 @@ def update_char(char_id, field, value):
             conn.commit()
             return True
 
-# Функция автообновления ника
 def update_user_username(user_id, new_username):
     with get_conn() as conn:
         with conn.cursor() as cursor:
@@ -107,6 +106,20 @@ def get_recent_transactions(limit=10):
                 FROM transactions t
                 LEFT JOIN characters s ON t.sender_id = s.char_id
                 LEFT JOIN characters r ON t.receiver_id = r.char_id
+                ORDER BY t.timestamp DESC LIMIT %s
+            """, (limit,))
+            return cursor.fetchall()
+
+# НОВАЯ ФУНКЦИЯ ДЛЯ ПОИСКА ФАРМА
+def get_farm_transactions(limit=10):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT t.timestamp, s.char_name, r.char_name, t.amount, t.currency 
+                FROM transactions t
+                JOIN characters s ON t.sender_id = s.char_id
+                JOIN characters r ON t.receiver_id = r.char_id
+                WHERE s.user_id = r.user_id
                 ORDER BY t.timestamp DESC LIMIT %s
             """, (limit,))
             return cursor.fetchall()
@@ -237,7 +250,10 @@ def process_transfer(message, sender, receiver, amount, currency):
     if amount <= 0 or currency not in {'uah', 'rub', 'usd', 'eur'}: 
         return bot.reply_to(message, "Ошибка в сумме или валюте.")
     if not receiver: return bot.reply_to(message, "У получателя нет персонажа.")
-    if sender[0] == receiver[0]: return bot.reply_to(message, "Себе переводить нельзя.")
+    
+    # Запрет на перевод самому себе (даже если разные персонажи)
+    if sender[1] == receiver[1]: 
+        return bot.reply_to(message, "❌ Запрещено переводить деньги между персонажами одного Telegram-аккаунта.")
 
     curr_idx = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}[currency]
     if sender[curr_idx] < amount: return bot.reply_to(message, "❌ Недостаточно средств.")
@@ -262,6 +278,19 @@ def show_history(message):
         s_name = f"{t[1]} ({t[2]})" if t[2] else t[1]
         r_name = f"{t[3]} ({t[4]})" if t[4] else t[3]
         text += f"🕒 {time_str} | {s_name} ➡️ {r_name} | {t[5]} {t[6].upper()}\n"
+    bot.reply_to(message, text, parse_mode='HTML')
+
+@bot.message_handler(commands=['checkfarm'], func=is_allowed)
+def show_farm(message):
+    if not is_admin(message): return
+    trans = get_farm_transactions(10)
+    if not trans:
+        return bot.reply_to(message, "✅ Подозрительных переводов между своими персонажами не найдено.")
+    
+    text = "🚨 <b>Найдены переводы между персонажами одного игрока:</b>\n\n"
+    for t in trans:
+        time_str = t[0].strftime("%d.%m %H:%M")
+        text += f"🕒 {time_str} | {t[1]} ➡️ {t[2]} | {t[3]} {t[4].upper()}\n"
     bot.reply_to(message, text, parse_mode='HTML')
 
 def admin_action_factory(action_type):
@@ -320,6 +349,10 @@ def all_callbacks(call):
             receiver = get_char_by_id(char_id)
             amount = int(data[2])
             currency = data[3]
+            
+            if sender[1] == receiver[1]:
+                return bot.answer_callback_query(call.id, "❌ Запрещено переводить между своими персонажами!")
+
             curr_idx = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}[currency]
             if sender[curr_idx] >= amount:
                 update_char(sender[0], currency, -amount)
