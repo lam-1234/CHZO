@@ -50,7 +50,6 @@ if name == 'main':
     print("Бот запущен...")
     while True:
         try:
-            # drop_pending_updates=True защищает от ошибки 409 при перезапусках
             bot.polling(none_stop=True, interval=0, timeout=20, drop_pending_updates=True)
         except Exception as e:
             print(f"Сбой: {e}")
