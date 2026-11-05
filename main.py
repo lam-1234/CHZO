@@ -129,7 +129,7 @@ def is_admin(message): return message.from_user.id == ADMIN_ID
 @bot.message_handler(commands=['start', 'help'], func=is_allowed)
 def send_welcome(message):
     text = (
-        "☢️ <b>Терминал ЧЗО активирован.</b>\n\n"
+        "☢️ <b>Справочник Система ЧЗО</b>\n\n"
         "<b>Команды:</b>\n"
         "/create - Создать персонажа (баланс 4000 руб.)\n"
         "/mychars - Список ваших персонажей\n"
@@ -141,7 +141,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['create'], func=is_allowed)
 def create_char(message):
-    msg = bot.reply_to(message, "Введите имя вашего нового сталкера (или напишите 'Отмена'):")
+    msg = bot.reply_to(message, "Введите имя вашего нового сталкера (или напишите <code>Отмена</code>):"), parse_mode='HTML')
     bot.register_next_step_handler(msg, process_create_char)
 
 def process_create_char(message):
@@ -182,7 +182,7 @@ def show_profile(message):
     text = (
         f"📁 <b>Личное дело</b>\n\n"
         f"👤 <b>Имя:</b> {p[2]}\n"
-        f"🛡 <b>Фракция:</b> {p[3]}\n"
+        f"🛡 <b>Группировка:</b> {p[3]}\n"
         f"⭐ <b>Репутация:</b> {p[4]}\n\n"
         f"💰 <b>Баланс:</b>\n"
         f"🇺🇦 {p[5]} | 🇷🇺 {p[6]}\n"
