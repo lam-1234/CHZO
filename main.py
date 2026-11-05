@@ -3,86 +3,141 @@ import psycopg2
 import os
 import time
 from telebot import types
+from flask import Flask
+import threading
 
 # ==========================================
-# ВАШИ НАСТРОЙКИ
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 5299699683 
+ADMIN_ID = 529969683 
 ALLOWED_CHAT_ID = -1004490896933 
 ALLOWED_TOPIC_ID = 9 
 # ==========================================
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ---
+# --- ФУНКЦИИ БАЗЫ ДАННЫХ (из db.py) ---
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
 def init_db():
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-        user_id BIGINT PRIMARY KEY,
-        active_char_id INTEGER
-    )''')
-    cursor.execute('''CREATE TABLE IF NOT EXISTS characters (
-        char_id SERIAL PRIMARY KEY,
-        user_id BIGINT,
-        char_name TEXT,
-        faction TEXT DEFAULT 'Одиночка',
-        reputation INTEGER DEFAULT 0,
-        uah INTEGER DEFAULT 0,
-        rub INTEGER DEFAULT 0,
-        usd INTEGER DEFAULT 0,
-        eur INTEGER DEFAULT 0
-    )''')
-    conn.commit()
-    conn.close()
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                active_char_id INTEGER
+            )''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS characters (
+                char_id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                char_name TEXT,
+                faction TEXT DEFAULT 'Одиночка',
+                reputation INTEGER DEFAULT 0,
+                uah INTEGER DEFAULT 0,
+                rub INTEGER DEFAULT 4000,
+                usd INTEGER DEFAULT 0,
+                eur INTEGER DEFAULT 0
+            )''')
+            cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (
+                trans_id SERIAL PRIMARY KEY,
+                sender_id INTEGER,
+                receiver_id INTEGER,
+                amount INTEGER,
+                currency TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )''')
+            conn.commit()
+
+def get_active_player(user_id):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT active_char_id FROM users WHERE user_id = %s", (user_id,))
+            user = cursor.fetchone()
+            if not user or not user[0]:
+                return None
+            cursor.execute("SELECT * FROM characters WHERE char_id = %s", (user[0],))
+            return cursor.fetchone()
+
+def get_all_chars(user_id):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT char_id, char_name FROM characters WHERE user_id = %s", (user_id,))
+            return cursor.fetchall()
+
+def get_char_by_name(name):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM characters WHERE LOWER(char_name) = LOWER(%s)", (name,))
+            return cursor.fetchall()
+
+def get_char_by_id(char_id):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM characters WHERE char_id = %s", (char_id,))
+            return cursor.fetchone()
+
+def update_char(char_id, field, value):
+    allowed_fields = ['faction', 'reputation', 'uah', 'rub', 'usd', 'eur']
+    if field not in allowed_fields:
+        return False
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(f"UPDATE characters SET {field} = {field} + %s WHERE char_id = %s", (value, char_id))
+            conn.commit()
+            return True
+
+def log_transaction(sender_id, receiver_id, amount, currency):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO transactions (sender_id, receiver_id, amount, currency) VALUES (%s, %s, %s, %s)",
+                (sender_id, receiver_id, amount, currency)
+            )
+            conn.commit()
+
+def get_recent_transactions(limit=10):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT t.timestamp, s.char_name, r.char_name, t.amount, t.currency 
+                FROM transactions t
+                LEFT JOIN characters s ON t.sender_id = s.char_id
+                LEFT JOIN characters r ON t.receiver_id = r.char_id
+                ORDER BY t.timestamp DESC LIMIT %s
+            """, (limit,))
+            return cursor.fetchall()
 
 init_db()
 
-def get_active_player(user_id):
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute("SELECT active_char_id FROM users WHERE user_id = %s", (user_id,))
-    user = cursor.fetchone()
-    if not user or not user[0]:
-        conn.close()
-        return None
-    cursor.execute("SELECT * FROM characters WHERE char_id = %s", (user[0],))
-    player = cursor.fetchone()
-    conn.close()
-    return player
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+app = Flask(__name__)
 
-def get_all_chars(user_id):
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute("SELECT char_id, char_name FROM characters WHERE user_id = %s", (user_id,))
-    chars = cursor.fetchall()
-    conn.close()
-    return chars
+@app.route('/')
+def home():
+    return "Bot is running!"
 
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+
+# --- ЛОГИКА БОТА ---
 def is_allowed(message):
-    if message.chat.type == 'private' and message.chat.id == ADMIN_ID:
-        return True
-    if message.chat.id == ALLOWED_CHAT_ID and message.message_thread_id == ALLOWED_TOPIC_ID:
-        return True
+    if message.chat.type == 'private' and message.chat.id == ADMIN_ID: return True
+    if message.chat.id == ALLOWED_CHAT_ID and message.message_thread_id == ALLOWED_TOPIC_ID: return True
     return False
 
-def is_admin(message): 
-    return message.from_user.id == ADMIN_ID
-
-# --- КОМАНДЫ ИГРОКОВ ---
+def is_admin(message): return message.from_user.id == ADMIN_ID
 
 @bot.message_handler(commands=['start', 'help'], func=is_allowed)
 def send_welcome(message):
     text = (
         "☢️ <b>Терминал ЧЗО активирован.</b>\n\n"
         "<b>Команды:</b>\n"
-        "/create - Создать персонажа\n"
-        "/mychars - Список ваших персонажей (переключение)\n"
+        "/create - Создать персонажа (баланс 4000 руб.)\n"
+        "/mychars - Список ваших персонажей\n"
         "/profile - Посмотреть карточку\n"
-        "/pay [сумма] [валюта] [Имя] - Перевести деньги (или ответом на сообщение)\n"
-        "/deletechar - Удалить текущего персонажа\n\n"
-        "Валюты: uah, rub, usd, eur"
+        "/pay [сумма] [валюта] [Имя] - Перевести деньги\n"
+        "/deletechar - Удалить текущего персонажа"
     )
     bot.reply_to(message, text, parse_mode='HTML')
 
@@ -95,326 +150,202 @@ def process_create_char(message):
     if message.text.lower() == 'отмена':
         return bot.reply_to(message, "Создание отменено.")
     if len(message.text) > 30:
-        return bot.reply_to(message, "Имя слишком длинное (макс 30 символов). Попробуйте снова /create")
-
-    name = message.text
+        return bot.reply_to(message, "Имя слишком длинное (макс 30 символов).")
+    
     user_id = message.from_user.id
-
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO characters (user_id, char_name) VALUES (%s, %s) RETURNING char_id", (user_id, name))
-        new_char_id = cursor.fetchone()[0]
-        cursor.execute("INSERT INTO users (user_id, active_char_id) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET active_char_id = %s", (user_id, new_char_id, new_char_id))
-        conn.commit()
-        conn.close()
-        bot.reply_to(message, f"✅ Персонаж <b>{name}</b> успешно создан и выбран активным!", parse_mode='HTML')
-    except Exception as e:
-        bot.reply_to(message, "Ошибка базы данных при создании.")
+    name = message.text
+    
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("INSERT INTO characters (user_id, char_name) VALUES (%s, %s) RETURNING char_id", (user_id, name))
+            new_char_id = cursor.fetchone()[0]
+            cursor.execute("INSERT INTO users (user_id, active_char_id) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET active_char_id = %s", (user_id, new_char_id, new_char_id))
+            conn.commit()
+    bot.reply_to(message, f"✅ Персонаж <b>{name}</b> создан и выбран! Выдано 4000 руб.", parse_mode='HTML')
 
 @bot.message_handler(commands=['mychars'], func=is_allowed)
 def list_chars(message):
-    user_id = message.from_user.id
-    chars = get_all_chars(user_id)
-    
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute("SELECT active_char_id FROM users WHERE user_id = %s", (user_id,))
-    active = cursor.fetchone()
-    active_id = active[0] if active else None
-    conn.close()
-
+    chars = get_all_chars(message.from_user.id)
     if not chars:
-        return bot.reply_to(message, "У вас пока нет персонажей. Напишите /create")
-
+        return bot.reply_to(message, "У вас нет персонажей. Напишите /create")
+    
+    active = get_active_player(message.from_user.id)
+    active_id = active[0] if active else None
+    
     markup = types.InlineKeyboardMarkup()
     for c in chars:
         prefix = "✅ " if c[0] == active_id else "👤 "
         markup.add(types.InlineKeyboardButton(f"{prefix}{c[1]}", callback_data=f"switch_{c[0]}"))
-    
-    bot.reply_to(message, "Выберите персонажа, от лица которого хотите играть:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('switch_'))
-def switch_character(call):
-    char_id = int(call.data.split('_')[1])
-    user_id = call.from_user.id
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute("SELECT char_name FROM characters WHERE char_id = %s AND user_id = %s", (char_id, user_id))
-    char = cursor.fetchone()
-    if char:
-        cursor.execute("UPDATE users SET active_char_id = %s WHERE user_id = %s", (char_id, user_id))
-        conn.commit()
-        bot.answer_callback_query(call.id, f"Вы переключились на {char[0]}")
-        bot.edit_message_text(f"Активный персонаж: <b>{char[0]}</b>", call.message.chat.id, call.message.message_id, parse_mode='HTML')
-    else:
-        bot.answer_callback_query(call.id, "Ошибка: персонаж не найден.")
-    conn.close()
-
-@bot.message_handler(commands=['deletechar'], func=is_allowed)
-def delete_char(message):
-    p = get_active_player(message.from_user.id)
-    if not p:
-        return bot.reply_to(message, "У вас нет активного персонажа для удаления.")
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("💀 Да, удалить", callback_data=f"delchar_{p[0]}"))
-    markup.add(types.InlineKeyboardButton("Отмена", callback_data="delchar_cancel"))
-    bot.reply_to(message, f"Вы уверены, что хотите <b>НАВСЕГДА</b> удалить персонажа <b>{p[2]}</b>?", reply_markup=markup, parse_mode='HTML')
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('delchar_'))
-def process_delete_char(call):
-    if call.data == "delchar_cancel":
-        return bot.edit_message_text("Удаление отменено.", call.message.chat.id, call.message.message_id)
-    char_id = int(call.data.split('_')[1])
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM characters WHERE char_id = %s AND user_id = %s", (char_id, call.from_user.id))
-    cursor.execute("UPDATE users SET active_char_id = NULL WHERE user_id = %s", (call.from_user.id,))
-    conn.commit()
-    conn.close()
-    bot.edit_message_text("🗑 Персонаж удален. Вы можете создать нового через /create.", call.message.chat.id, call.message.message_id)
+    bot.reply_to(message, "Выберите персонажа:", reply_markup=markup)
 
 @bot.message_handler(commands=['profile'], func=is_allowed)
 def show_profile(message):
     p = get_active_player(message.from_user.id)
     if not p:
-        return bot.reply_to(message, "У вас нет активного персонажа. Создайте его через /create")
+        return bot.reply_to(message, "Нет активного персонажа. /create")
     text = (
-        f"📁 <b>Личное дело сталкера</b>\n\n"
+        f"📁 <b>Личное дело</b>\n\n"
         f"👤 <b>Имя:</b> {p[2]}\n"
-        f"🛡 <b>Группировка:</b> {p[3]}\n"
+        f"🛡 <b>Фракция:</b> {p[3]}\n"
         f"⭐ <b>Репутация:</b> {p[4]}\n\n"
         f"💰 <b>Баланс:</b>\n"
-        f"🇺🇦 Гривна: {p[5]}\n"
-        f"🇷🇺 Рубль: {p[6]}\n"
-        f"🇺🇸 Доллар: {p[7]}\n"
-        f"🇪🇺 Евро: {p[8]}"
+        f"🇺🇦 {p[5]} | 🇷🇺 {p[6]}\n"
+        f"🇺🇸 {p[7]} | 🇪🇺 {p[8]}"
     )
     bot.reply_to(message, text, parse_mode='HTML')
-
-# --- СИСТЕМА ПЕРЕВОДОВ ---
 
 @bot.message_handler(commands=['pay'], func=is_allowed)
 def transfer_money(message):
     sender = get_active_player(message.from_user.id)
-    if not sender:
-        return bot.reply_to(message, "У вас нет активного персонажа. Создайте его через /create")
+    if not sender: return bot.reply_to(message, "Нет активного персонажа.")
 
-    # Режим 1: Ответ на сообщение
-    if message.reply_to_message:
-        receiver = get_active_player(message.reply_to_message.from_user.id)
-        if not receiver:
-            return bot.reply_to(message, "У получателя нет активного персонажа.")
-        try:
-            args = message.text.split()[1:]
-            amount = int(args[0])
-            currency = args[1].lower()
-        except:
-            return bot.reply_to(message, "Формат: <code>/pay [сумма] [валюта]</code>", parse_mode='HTML')
-        
-        process_transfer(message, sender, receiver, amount, currency)
-
-    # Режим 2: По имени персонажа
-    else:
-        try:
-            parts = message.text.split(maxsplit=3)
-            amount = int(parts[1])
-            currency = parts[2].lower()
-            target_name = parts[3]
-        except:
-            return bot.reply_to(message, "Формат: <code>/pay [сумма] [валюта] [Имя]</code>\nПример: <code>/pay 500 rub Шансон</code>", parse_mode='HTML')
-
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("SELECT char_id, char_name, user_id FROM characters WHERE LOWER(char_name) = LOWER(%s)", (target_name,))
-        found_chars = cursor.fetchall()
-        conn.close()
-
-        if not found_chars:
-            return bot.reply_to(message, f"❌ Персонаж с именем <b>{target_name}</b> не найден.", parse_mode='HTML')
-
-        if len(found_chars) == 1:
-            char_id = found_chars[0][0]
-            conn = psycopg2.connect(DATABASE_URL)
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM characters WHERE char_id = %s", (char_id,))
-            receiver = cursor.fetchone()
-            conn.close()
-            process_transfer(message, sender, receiver, amount, currency)
+    receiver = None
+    try:
+        args = message.text.split()
+        if message.reply_to_message:
+            receiver = get_active_player(message.reply_to_message.from_user.id)
+            amount, currency = int(args[1]), args[2].lower()
         else:
-            markup = types.InlineKeyboardMarkup()
-            for c in found_chars:
-                markup.add(types.InlineKeyboardButton(f"{c[1]} (ID: {c[0]})", callback_data=f"pp_{c[0]}_{amount}_{currency}"))
-            bot.reply_to(message, f"Найдено несколько персонажей с именем <b>{target_name}</b>. Кому перевести?", reply_markup=markup, parse_mode='HTML')
+            amount, currency = int(args[1]), args[2].lower()
+            target_name = message.text.split(maxsplit=3)[3]
+            found = get_char_by_name(target_name)
+            
+            if not found: return bot.reply_to(message, "❌ Персонаж не найден.")
+            if len(found) > 1:
+                markup = types.InlineKeyboardMarkup()
+                for c in found:
+                    markup.add(types.InlineKeyboardButton(c[2], callback_data=f"pp_{c[0]}_{amount}_{currency}"))
+                return bot.reply_to(message, "Найдено несколько. Кому перевести?", reply_markup=markup)
+            receiver = found[0]
+    except:
+        return bot.reply_to(message, "Формат: /pay [сумма] [валюта] [Имя] или ответом на сообщение.")
+
+    process_transfer(message, sender, receiver, amount, currency)
 
 def process_transfer(message, sender, receiver, amount, currency):
-    if amount <= 0: 
-        return bot.reply_to(message, "Сумма должна быть больше нуля.")
+    if amount <= 0 or currency not in {'uah', 'rub', 'usd', 'eur'}: 
+        return bot.reply_to(message, "Ошибка в сумме или валюте.")
+    if not receiver: return bot.reply_to(message, "У получателя нет персонажа.")
+    if sender[0] == receiver[0]: return bot.reply_to(message, "Себе переводить нельзя.")
+
+    curr_idx = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}[currency]
+    if sender[curr_idx] < amount: return bot.reply_to(message, "❌ Недостаточно средств.")
+
+    update_char(sender[0], currency, -amount)
+    update_char(receiver[0], currency, amount)
+    log_transaction(sender[0], receiver[0], amount, currency)
     
-    curr_map = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}
-    if currency not in curr_map: 
-        return bot.reply_to(message, "Валюты: uah, rub, usd, eur")
-
-    if sender[0] == receiver[0]:
-        return bot.reply_to(message, "❌ Вы не можете перевести деньги самому себе.")
-
-    if sender[curr_map[currency]] < amount:
-        return bot.reply_to(message, "❌ Недостаточно средств.")
-
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE characters SET {currency} = {currency} - %s WHERE char_id = %s", (amount, sender[0]))
-        cursor.execute(f"UPDATE characters SET {currency} = {currency} + %s WHERE char_id = %s", (amount, receiver[0]))
-        conn.commit()
-        conn.close()
-        bot.reply_to(message, f"✅ Вы перевели <b>{amount} {currency.upper()}</b> сталкеру <b>{receiver[2]}</b>.", parse_mode='HTML')
-    except Exception as e:
-        bot.reply_to(message, "Ошибка базы данных при переводе.")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('pp_'))
-def handle_player_pay_button(call):
-    data = call.data.split('_')
-    char_id = int(data[1])
-    amount = int(data[2])
-    currency = data[3]
-    user_id = call.from_user.id
-
-    sender = get_active_player(user_id)
-    if not sender:
-        return bot.answer_callback_query(call.id, "У вас нет активного персонажа.")
-
-    conn = psycopg2.connect(DATABASE_URL)
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM characters WHERE char_id = %s", (char_id,))
-    receiver = cursor.fetchone()
-    conn.close()
-
-    if not receiver:
-        return bot.answer_callback_query(call.id, "Ошибка: персонаж не найден.")
-
-    if sender[0] == receiver[0]:
-        return bot.answer_callback_query(call.id, "❌ Вы не можете перевести самому себе.")
-
-    curr_map = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}
-    if sender[curr_map[currency]] < amount:
-        return bot.answer_callback_query(call.id, "❌ Недостаточно средств.")
-
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE characters SET {currency} = {currency} - %s WHERE char_id = %s", (amount, sender[0]))
-        cursor.execute(f"UPDATE characters SET {currency} = {currency} + %s WHERE char_id = %s", (amount, receiver[0]))
-        conn.commit()
-        conn.close()
-        
-        bot.edit_message_text(f"✅ Успешно переведено <b>{amount} {currency.upper()}</b> сталкеру <b>{receiver[2]}</b>.", call.message.chat.id, call.message.message_id, parse_mode='HTML')
-    except Exception as e:
-        bot.answer_callback_query(call.id, "Ошибка базы данных.")
+    bot.reply_to(message, f"✅ Переведено <b>{amount} {currency.upper()}</b> игроку <b>{receiver[2]}</b>.", parse_mode='HTML')
 
 # --- КОМАНДЫ АДМИНИСТРАТОРА ---
 
-@bot.message_handler(commands=['setfaction'], func=is_allowed)
-def admin_setfaction(message):
+@bot.message_handler(commands=['history'], func=is_allowed)
+def show_history(message):
     if not is_admin(message): return
-    if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
-    chars = get_all_chars(message.reply_to_message.from_user.id)
-    if not chars: return bot.reply_to(message, "У этого игрока нет персонажей.")
-    try: faction = message.text.split(maxsplit=1)[1]
-    except: return bot.reply_to(message, "Формат: <code>/setfaction Название</code>", parse_mode='HTML')
+    trans = get_recent_transactions(10)
+    if not trans:
+        return bot.reply_to(message, "Транзакций пока нет.")
+    
+    text = "📊 <b>Последние 10 транзакций:</b>\n\n"
+    for t in trans:
+        time_str = t[0].strftime("%H:%M")
+        text += f"🕒 {time_str} | {t[1]} ➡️ {t[2]} | {t[3]} {t[4].upper()}\n"
+    bot.reply_to(message, text, parse_mode='HTML')
 
-    if len(chars) == 1:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE characters SET faction = %s WHERE char_id = %s", (faction, chars[0][0]))
-        conn.commit()
-        conn.close()
-        return bot.reply_to(message, f"✅ Группировка <b>{faction}</b> выдана персонажу <b>{chars[0][1]}</b>.", parse_mode='HTML')
-    else:
+def admin_action_factory(action_type):
+    def handler(message):
+        if not is_admin(message): return
+        if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
+        
+        chars = get_all_chars(message.reply_to_message.from_user.id)
+        if not chars: return bot.reply_to(message, "У игрока нет персонажей.")
+        
+        try:
+            args = message.text.split()[1:]
+            val = int(args[0]) if action_type != 'faction' else ' '.join(args)
+            curr = args[1].lower() if action_type == 'money' else None
+        except: return bot.reply_to(message, "Ошибка в формате команды.")
+
+        if len(chars) == 1:
+            field = 'faction' if action_type == 'faction' else ('reputation' if action_type == 'rep' else curr)
+            update_char(chars[0][0], field, val)
+            return bot.reply_to(message, f"✅ Успешно применено к <b>{chars[0][1]}</b>.", parse_mode='HTML')
+        
         markup = types.InlineKeyboardMarkup()
         for c in chars:
-            markup.add(types.InlineKeyboardButton(c[1], callback_data=f"sf_{c[0]}_{faction}"))
-        bot.reply_to(message, f"Выберите, кому выдать фракцию <b>{faction}</b>:", reply_markup=markup, parse_mode='HTML')
+            cb_data = f"{action_type}_{c[0]}_{val}" + (f"_{curr}" if curr else "")
+            markup.add(types.InlineKeyboardButton(c[1], callback_data=cb_data))
+        bot.reply_to(message, "Выберите персонажа:", reply_markup=markup)
+    return handler
 
-@bot.message_handler(commands=['addmoney'], func=is_allowed)
-def admin_addmoney(message):
-    if not is_admin(message): return
-    if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
-    chars = get_all_chars(message.reply_to_message.from_user.id)
-    if not chars: return bot.reply_to(message, "У этого игрока нет персонажей.")
-    try:
-        args = message.text.split()[1:]
-        amount = int(args[0])
-        currency = args[1].lower()
-        if currency not in {'uah', 'rub', 'usd', 'eur'}: raise Exception
-    except:
-        return bot.reply_to(message, "Формат: <code>/addmoney [сумма] [валюта]</code>", parse_mode='HTML')
+bot.message_handler(commands=['addmoney'], func=is_allowed)(admin_action_factory('money'))
+bot.message_handler(commands=['addrep'], func=is_allowed)(admin_action_factory('rep'))
+bot.message_handler(commands=['setfaction'], func=is_allowed)(admin_action_factory('faction'))
 
-    if len(chars) == 1:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute(f"UPDATE characters SET {currency} = {currency} + %s WHERE char_id = %s", (amount, chars[0][0]))
-        conn.commit()
-        conn.close()
-        return bot.reply_to(message, f"✅ Начислено <b>{amount} {currency.upper()}</b> персонажу <b>{chars[0][1]}</b>.", parse_mode='HTML')
-    else:
-        markup = types.InlineKeyboardMarkup()
-        for c in chars:
-            markup.add(types.InlineKeyboardButton(c[1], callback_data=f"am_{c[0]}_{amount}_{currency}"))
-        bot.reply_to(message, f"Кому начислить <b>{amount} {currency.upper()}</b>?", reply_markup=markup, parse_mode='HTML')
+# --- ОБРАБОТЧИКИ КНОПОК ---
 
-@bot.message_handler(commands=['addrep'], func=is_allowed)
-def admin_addrep(message):
-    if not is_admin(message): return
-    if not message.reply_to_message: return bot.reply_to(message, "Ответьте на сообщение игрока.")
-    chars = get_all_chars(message.reply_to_message.from_user.id)
-    if not chars: return bot.reply_to(message, "У этого игрока нет персонажей.")
-    try: amount = int(message.text.split()[1])
-    except: return bot.reply_to(message, "Формат: <code>/addrep [число]</code>", parse_mode='HTML')
-
-    if len(chars) == 1:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE characters SET reputation = reputation + %s WHERE char_id = %s", (amount, chars[0][0]))
-        conn.commit()
-        conn.close()
-        return bot.reply_to(message, f"✅ Репутация <b>{amount}</b> выдана персонажу <b>{chars[0][1]}</b>.", parse_mode='HTML')
-    else:
-        markup = types.InlineKeyboardMarkup()
-        for c in chars:
-            markup.add(types.InlineKeyboardButton(c[1], callback_data=f"ar_{c[0]}_{amount}"))
-        bot.reply_to(message, f"Кому начислить репутацию <b>{amount}</b>?", reply_markup=markup, parse_mode='HTML')
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('am_') or call.data.startswith('ar_') or call.data.startswith('sf_'))
-def handle_admin_action(call):
-    if call.from_user.id != ADMIN_ID: return bot.answer_callback_query(call.id, "Нет прав!")
+@bot.callback_query_handler(func=lambda call: True)
+def all_callbacks(call):
     data = call.data.split('_')
-    action, char_id = data[0], int(data[1])
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cursor = conn.cursor()
-        if action == 'am':
-            amount, currency = int(data[2]), data[3]
-            cursor.execute(f"UPDATE characters SET {currency} = {currency} + %s WHERE char_id = %s", (amount, char_id))
-            msg_text = f"✅ Начислено <b>{amount} {currency.upper()}</b>."
-        elif action == 'ar':
+    action = data[0]
+    
+    if action == 'switch':
+        with get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("UPDATE users SET active_char_id = %s WHERE user_id = %s", (data[1], call.from_user.id))
+                conn.commit()
+        bot.edit_message_text(f"✅ Персонаж выбран.", call.message.chat.id, call.message.message_id)
+        
+    elif action == 'delchar':
+        if data[1] == 'cancel': return bot.edit_message_text("Отменено.", call.message.chat.id, call.message.message_id)
+        with get_conn() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM characters WHERE char_id = %s", (data[1],))
+                cursor.execute("UPDATE users SET active_char_id = NULL WHERE user_id = %s", (call.from_user.id,))
+                conn.commit()
+        bot.edit_message_text("🗑 Удален.", call.message.chat.id, call.message.message_id)
+        
+    elif action in ['pp', 'am', 'ar', 'sf']:
+        char_id = int(data[1])
+        if action == 'pp':
+            sender = get_active_player(call.from_user.id)
+            receiver = get_char_by_id(char_id)
             amount = int(data[2])
-            cursor.execute("UPDATE characters SET reputation = reputation + %s WHERE char_id = %s", (amount, char_id))
-            msg_text = f"✅ Репутация изменена на <b>{amount}</b>."
-        elif action == 'sf':
-            faction = data[2]
-            cursor.execute("UPDATE characters SET faction = %s WHERE char_id = %s", (faction, char_id))
-            msg_text = f"✅ Группировка изменена на <b>{faction}</b>."
-        conn.commit()
-        conn.close()
-        bot.edit_message_text(f"{msg_text}\nДействие применено к выбранному персонажу.", call.message.chat.id, call.message.message_id, parse_mode='HTML')
-    except Exception as e:
-        bot.answer_callback_query(call.id, "Ошибка при выполнении.")
+            currency = data[3]
+            
+            curr_idx = {'uah': 5, 'rub': 6, 'usd': 7, 'eur': 8}[currency]
+            if sender[curr_idx] >= amount:
+                update_char(sender[0], currency, -amount)
+                update_char(receiver[0], currency, amount)
+                log_transaction(sender[0], receiver[0], amount, currency)
+                bot.edit_message_text(f"✅ Переведено {amount} {currency.upper()} игроку {receiver[2]}.", call.message.chat.id, call.message.message_id)
+            else:
+                bot.answer_callback_query(call.id, "Недостаточно средств.")
+        else:
+            field = 'faction' if action == 'sf' else ('reputation' if action == 'ar' else data[3])
+            val = data[2] if action != 'sf' else data[2]
+            if action == 'am': val = int(val)
+            if action == 'ar': val = int(val)
+            update_char(char_id, field, val)
+            bot.edit_message_text("✅ Начислено.", call.message.chat.id, call.message.message_id)
 
-# --- АВТОПЕРЕЗАПУСК ---
-print("Терминал ЧЗО запущен...")
-while True:
-    try:
-        bot.polling(none_stop=True, interval=0, timeout=20)
-    except Exception as e:
-        time.sleep(5)
+@bot.message_handler(commands=['deletechar'], func=is_allowed)
+def delete_char(message):
+    p = get_active_player(message.from_user.id)
+    if not p: return bot.reply_to(message, "Нет активного персонажа.")
+    markup = types.InlineKeyboardMarkup().add(
+        types.InlineKeyboardButton("💀 Удалить", callback_data=f"delchar_{p[0]}"),
+        types.InlineKeyboardButton("Отмена", callback_data="delchar_cancel")
+    )
+    bot.reply_to(message, f"Удалить <b>{p[2]}</b>?", reply_markup=markup, parse_mode='HTML')
+
+# --- ЗАПУСК ---
+if __name__ == '__main__':
+    threading.Thread(target=run_flask).start()
+    print("Бот запущен...")
+    while True:
+        try:
+            bot.polling(none_stop=True, interval=0, timeout=20)
+        except Exception as e:
+            print(f"Сбой: {e}")
+            time.sleep(5)
