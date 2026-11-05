@@ -10,7 +10,7 @@ import threading
 # ВАШИ НАСТРОЙКИ
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 5299699683 
+ADMIN_ID = 5299699683 # ТВОЙ ID
 ALLOWED_CHAT_ID = -1004490896933 
 ALLOWED_TOPIC_ID = 9 
 # ==========================================
@@ -37,7 +37,8 @@ def init_db():
                 uah INTEGER DEFAULT 0,
                 rub INTEGER DEFAULT 4000,
                 usd INTEGER DEFAULT 0,
-                eur INTEGER DEFAULT 0
+                eur INTEGER DEFAULT 0,
+                tg_username TEXT
             )''')
             cursor.execute('''CREATE TABLE IF NOT EXISTS transactions (
                 trans_id SERIAL PRIMARY KEY,
@@ -85,6 +86,13 @@ def update_char(char_id, field, value):
             conn.commit()
             return True
 
+# НОВАЯ ФУНКЦИЯ ДЛЯ ОБНОВЛЕНИЯ НИКА
+def update_user_username(user_id, new_username):
+    with get_conn() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE characters SET tg_username = %s WHERE user_id = %s", (new_username, user_id))
+            conn.commit()
+
 def log_transaction(sender_id, receiver_id, amount, currency):
     with get_conn() as conn:
         with conn.cursor() as cursor:
@@ -95,7 +103,7 @@ def get_recent_transactions(limit=10):
     with get_conn() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
-                SELECT t.timestamp, s.char_name, r.char_name, t.amount, t.currency 
+                SELECT t.timestamp, s.char_name, s.tg_username, r.char_name, r.tg_username, t.amount, t.currency 
                 FROM transactions t
                 LEFT JOIN characters s ON t.sender_id = s.char_id
                 LEFT JOIN characters r ON t.receiver_id = r.char_id
@@ -124,17 +132,6 @@ def is_allowed(message):
 
 def is_admin(message): return message.from_user.id == ADMIN_ID
 
-# ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ЮЗЕРНЕЙМА (НИКА)
-def get_user_tag(user_id):
-    try:
-        chat = bot.get_chat(user_id)
-        if chat.username:
-            return f"@{chat.username}"
-        else:
-            return chat.first_name
-    except Exception:
-        return "Неизвестный"
-
 # --- КОМАНДЫ ИГРОКОВ ---
 
 @bot.message_handler(commands=['start', 'help'], func=is_allowed)
@@ -162,9 +159,11 @@ def process_create_char(message):
     user_id = message.from_user.id
     name = message.text
     
+    tg_username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    
     with get_conn() as conn:
         with conn.cursor() as cursor:
-            cursor.execute("INSERT INTO characters (user_id, char_name) VALUES (%s, %s) RETURNING char_id", (user_id, name))
+            cursor.execute("INSERT INTO characters (user_id, char_name, tg_username) VALUES (%s, %s, %s) RETURNING char_id", (user_id, name, tg_username))
             new_char_id = cursor.fetchone()[0]
             cursor.execute("INSERT INTO users (user_id, active_char_id) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET active_char_id = %s", (user_id, new_char_id, new_char_id))
             conn.commit()
@@ -186,8 +185,13 @@ def list_chars(message):
 
 @bot.message_handler(commands=['profile'], func=is_allowed)
 def show_profile(message):
+    # Обновляем ник в базе при каждом заходе в профиль
+    current_tag = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    update_user_username(message.from_user.id, current_tag)
+
     p = get_active_player(message.from_user.id)
     if not p: return bot.reply_to(message, "Нет активного персонажа. /create")
+    
     text = (
         f"📁 <b>Личное дело</b>\n\n"
         f"👤 <b>Имя:</b> {p[2]}\n"
@@ -201,6 +205,10 @@ def show_profile(message):
 
 @bot.message_handler(commands=['pay'], func=is_allowed)
 def transfer_money(message):
+    # Обновляем ник отправителя при переводе
+    current_tag = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    update_user_username(message.from_user.id, current_tag)
+
     sender = get_active_player(message.from_user.id)
     if not sender: return bot.reply_to(message, "Нет активного персонажа.")
 
@@ -219,8 +227,7 @@ def transfer_money(message):
             if len(found) > 1:
                 markup = types.InlineKeyboardMarkup()
                 for c in found:
-                    user_tag = get_user_tag(c[1])
-                    btn_text = f"{c[2]} ({user_tag})"
+                    btn_text = f"{c[2]} ({c[9]})" if c[9] else c[2]
                     markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"pp_{c[0]}_{amount}_{currency}"))
                 return bot.reply_to(message, "Найдено несколько. Выберите нужного (по нику владельца):", reply_markup=markup)
             receiver = found[0]
@@ -255,7 +262,9 @@ def show_history(message):
     text = "📊 <b>Последние 10 транзакций:</b>\n\n"
     for t in trans:
         time_str = t[0].strftime("%H:%M")
-        text += f"🕒 {time_str} | {t[1]} ➡️ {t[2]} | {t[3]} {t[4].upper()}\n"
+        s_name = f"{t[1]} ({t[2]})" if t[2] else t[1]
+        r_name = f"{t[3]} ({t[4]})" if t[4] else t[3]
+        text += f"🕒 {time_str} | {s_name} ➡️ {r_name} | {t[5]} {t[6].upper()}\n"
     bot.reply_to(message, text, parse_mode='HTML')
 
 def admin_action_factory(action_type):
