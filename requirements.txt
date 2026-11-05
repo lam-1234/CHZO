@@ -1,2 +1,3 @@
-pytelegrambotapi
+pyTelegramBotAPI
 psycopg2-binary
+Flask
