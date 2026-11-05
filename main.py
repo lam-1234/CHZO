@@ -9,7 +9,7 @@ import threading
 # ==========================================
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 529969683 
+ADMIN_ID = 5299699683 
 ALLOWED_CHAT_ID = -1004490896933 
 ALLOWED_TOPIC_ID = 9 
 # ==========================================
