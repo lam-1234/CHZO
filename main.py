@@ -7,12 +7,12 @@ from flask import Flask
 import threading
 
 # ==========================================
-# ВАШИ НАСТРОЙКИ
+# ВАШИ НАСТРОЙКИ (Берутся из настроек Render)
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 5299699683 
-ALLOWED_CHAT_ID = -1004490896933 
-ALLOWED_TOPIC_ID = 9 
+ADMIN_ID = 5299699683 # ВАШ ID
+ALLOWED_CHAT_ID = -1004490896933 # ID ГРУППЫ
+ALLOWED_TOPIC_ID = 9 # ID ТЕМЫ
 # ==========================================
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -335,7 +335,8 @@ if __name__ == '__main__':
     print("Бот запущен...")
     while True:
         try:
-            bot.polling(none_stop=True, interval=0, timeout=20, drop_pending_updates=True)
+            # Убрали drop_pending_updates, чтобы не было ошибки на Render
+            bot.polling(non_stop=True, interval=0, timeout=20)
         except Exception as e:
             print(f"Сбой: {e}")
             time.sleep(5)
