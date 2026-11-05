@@ -10,17 +10,10 @@ import threading
 # ВАШИ НАСТРОЙКИ
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 529969683 
+ADMIN_ID = 5299699683 
 ALLOWED_CHAT_ID = -1004490896933 
 ALLOWED_TOPIC_ID = 9 
 # ==========================================
-
-SHOP_ITEMS = {
-    "medkit": {"name": "Аптечка", "price": 500, "desc": "Восстанавливает здоровье"},
-    "ammo_545": {"name": "Патроны 5.45", "price": 300, "desc": "30 штук для АК"},
-    "vodka": {"name": "Водка", "price": 200, "desc": "Выводит легкую радиацию"},
-    "detector": {"name": "Детектор Медведь", "price": 5000, "desc": "Помогает искать артефакты"}
-}
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -53,12 +46,6 @@ def init_db():
                 amount INTEGER,
                 currency TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )''')
-            cursor.execute('''CREATE TABLE IF NOT EXISTS inventory (
-                inv_id SERIAL PRIMARY KEY,
-                char_id INTEGER,
-                item_id TEXT,
-                quantity INTEGER DEFAULT 1
             )''')
             conn.commit()
 
@@ -116,24 +103,6 @@ def get_recent_transactions(limit=10):
             """, (limit,))
             return cursor.fetchall()
 
-# --- ФУНКЦИИ ИНВЕНТАРЯ ---
-def add_to_inventory(char_id, item_id):
-    with get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT inv_id, quantity FROM inventory WHERE char_id = %s AND item_id = %s", (char_id, item_id))
-            row = cursor.fetchone()
-            if row:
-                cursor.execute("UPDATE inventory SET quantity = quantity + 1 WHERE inv_id = %s", (row[0],))
-            else:
-                cursor.execute("INSERT INTO inventory (char_id, item_id) VALUES (%s, %s)", (char_id, item_id))
-            conn.commit()
-
-def get_inventory(char_id):
-    with get_conn() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT item_id, quantity FROM inventory WHERE char_id = %s", (char_id,))
-            return cursor.fetchall()
-
 init_db()
 
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
@@ -173,60 +142,12 @@ def send_welcome(message):
     text = (
         "☢️ <b>Терминал ЧЗО активирован.</b>\n\n"
         "<b>Команды:</b>\n"
-        "/create - Создать персонажа\n"
+        "/create - Создать персонажа (баланс 4000 руб.)\n"
         "/mychars - Список ваших персонажей\n"
         "/profile - Посмотреть карточку\n"
-        "/shop - Открыть магазин\n"
-        "/inventory - Посмотреть инвентарь\n"
         "/pay [сумма] [валюта] [Имя] - Перевести деньги\n"
         "/deletechar - Удалить текущего персонажа"
     )
-    bot.reply_to(message, text, parse_mode='HTML')
-
-@bot.message_handler(commands=['shop'], func=is_allowed)
-def show_shop(message):
-    p = get_active_player(message.from_user.id)
-    if not p: return bot.reply_to(message, "Нет активного персонажа. /create")
-    
-    text = "🛒 <b>Магазин ЧЗО</b>\n"
-    text += f"Ваш баланс: <b>{p[6]} руб.</b>\n\n"
-    
-    markup = types.InlineKeyboardMarkup()
-    for item_id, data in SHOP_ITEMS.items():
-        btn_text = f"{data['name']} - {data['price']} руб."
-        markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"buy_{item_id}"))
-    
-    bot.reply_to(message, text, reply_markup=markup, parse_mode='HTML')
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('buy_'))
-def process_buy(call):
-    item_id = call.data.split('_')[1]
-    if item_id not in SHOP_ITEMS: return bot.answer_callback_query(call.id, "Ошибка.")
-    
-    item = SHOP_ITEMS[item_id]
-    p = get_active_player(call.from_user.id)
-    if not p: return bot.answer_callback_query(call.id, "Ошибка: нет персонажа.")
-    
-    if p[6] < item['price']: return bot.answer_callback_query(call.id, "❌ Недостаточно рублей.")
-    
-    update_char(p[0], 'rub', -item['price'])
-    add_to_inventory(p[0], item_id)
-    
-    bot.answer_callback_query(call.id, f"✅ Вы купили: {item['name']}!")
-    bot.edit_message_text(f"✅ Вы успешно купили <b>{item['name']}</b> за {item['price']} руб.\n\nОстаток: <b>{p[6] - item['price']} руб.</b>", call.message.chat.id, call.message.message_id, parse_mode='HTML')
-
-@bot.message_handler(commands=['inventory'], func=is_allowed)
-def show_inventory(message):
-    p = get_active_player(message.from_user.id)
-    if not p: return bot.reply_to(message, "Нет активного персонажа. /create")
-    
-    inv = get_inventory(p[0])
-    if not inv: return bot.reply_to(message, "🎒 Ваш инвентарь пуст.")
-    
-    text = f"🎒 <b>Инвентарь {p[2]}:</b>\n\n"
-    for item_id, qty in inv:
-        if item_id in SHOP_ITEMS:
-            text += f"• {SHOP_ITEMS[item_id]['name']} (x{qty})\n"
     bot.reply_to(message, text, parse_mode='HTML')
 
 @bot.message_handler(commands=['create'], func=is_allowed)
@@ -296,10 +217,9 @@ def transfer_money(message):
             
             if not found: return bot.reply_to(message, "❌ Персонаж не найден.")
             if len(found) > 1:
-                # ВОТ ЗДЕСЬ ТЕПЕРЬ ЮЗЕРНЕЙМ ВМЕСТО ID
                 markup = types.InlineKeyboardMarkup()
                 for c in found:
-                    user_tag = get_user_tag(c[1]) # c[1] - это user_id
+                    user_tag = get_user_tag(c[1])
                     btn_text = f"{c[2]} ({user_tag})"
                     markup.add(types.InlineKeyboardButton(btn_text, callback_data=f"pp_{c[0]}_{amount}_{currency}"))
                 return bot.reply_to(message, "Найдено несколько. Выберите нужного (по нику владельца):", reply_markup=markup)
