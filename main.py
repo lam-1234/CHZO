@@ -7,12 +7,12 @@ from flask import Flask
 import threading
 
 # ==========================================
-# ВАШИ НАСТРОЙКИ (Берутся из настроек Render)
+# ВАШИ НАСТРОЙКИ
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_ID = 5299699683 # ВАШ ID
-ALLOWED_CHAT_ID = -1004490896933 # ID ГРУППЫ
-ALLOWED_TOPIC_ID = 9 # ID ТЕМЫ
+ADMIN_ID = 5299699683 
+ALLOWED_CHAT_ID = -1004490896933 
+ALLOWED_TOPIC_ID = 9 
 # ==========================================
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -129,7 +129,7 @@ def is_admin(message): return message.from_user.id == ADMIN_ID
 @bot.message_handler(commands=['start', 'help'], func=is_allowed)
 def send_welcome(message):
     text = (
-        "☢️ <b>Справочник Система ЧЗО</b>\n\n"
+        "☢️ <b>Терминал ЧЗО активирован.</b>\n\n"
         "<b>Команды:</b>\n"
         "/create - Создать персонажа (баланс 4000 руб.)\n"
         "/mychars - Список ваших персонажей\n"
@@ -141,7 +141,8 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['create'], func=is_allowed)
 def create_char(message):
-    msg = bot.reply_to(message, "Введите имя вашего нового сталкера (или напишите <code>Отмена</code>):"), parse_mode='HTML')
+    # ИЗМЕНЕНИЕ 1: Красивое выделение слова Отмена
+    msg = bot.reply_to(message, "Введите имя вашего нового сталкера (или напишите <code>Отмена</code>):", parse_mode='HTML')
     bot.register_next_step_handler(msg, process_create_char)
 
 def process_create_char(message):
@@ -179,6 +180,7 @@ def list_chars(message):
 def show_profile(message):
     p = get_active_player(message.from_user.id)
     if not p: return bot.reply_to(message, "Нет активного персонажа. /create")
+    # ИЗМЕНЕНИЕ 2: Заменили Фракцию на Группировку
     text = (
         f"📁 <b>Личное дело</b>\n\n"
         f"👤 <b>Имя:</b> {p[2]}\n"
@@ -335,8 +337,7 @@ if __name__ == '__main__':
     print("Бот запущен...")
     while True:
         try:
-            # Убрали drop_pending_updates, чтобы не было ошибки на Render
-            bot.polling(non_stop=True, interval=0, timeout=20)
+            bot.polling(none_stop=True, interval=0, timeout=20)
         except Exception as e:
             print(f"Сбой: {e}")
             time.sleep(5)
