@@ -11,8 +11,8 @@ import threading
 BOT_TOKEN = os.getenv('BOT_TOKEN') 
 DATABASE_URL = os.getenv('DATABASE_URL')
 ADMIN_ID = 5299699683 # ТВОЙ ID
-ALLOWED_CHAT_ID = -1004490896933 
-ALLOWED_TOPIC_ID = 9 
+ALLOWED_CHAT_ID = -1004490896933 # ID ГРУППЫ
+ALLOWED_TOPIC_ID = 9 # ID ТЕМЫ
 # ==========================================
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -86,7 +86,7 @@ def update_char(char_id, field, value):
             conn.commit()
             return True
 
-# НОВАЯ ФУНКЦИЯ ДЛЯ ОБНОВЛЕНИЯ НИКА
+# Функция автообновления ника
 def update_user_username(user_id, new_username):
     with get_conn() as conn:
         with conn.cursor() as cursor:
@@ -154,11 +154,10 @@ def create_char(message):
 
 def process_create_char(message):
     if message.text.lower() == 'отмена': return bot.reply_to(message, "Создание отменено.")
-    if len(message.text) > 30: return bot.reply_to(message, "Имя слишком длинное.")
+    if len(message.text) > 30: return bot.reply_to(message, "Имя слишком длинное (макс 30 символов).")
     
     user_id = message.from_user.id
     name = message.text
-    
     tg_username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     
     with get_conn() as conn:
@@ -185,7 +184,6 @@ def list_chars(message):
 
 @bot.message_handler(commands=['profile'], func=is_allowed)
 def show_profile(message):
-    # Обновляем ник в базе при каждом заходе в профиль
     current_tag = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     update_user_username(message.from_user.id, current_tag)
 
@@ -205,7 +203,6 @@ def show_profile(message):
 
 @bot.message_handler(commands=['pay'], func=is_allowed)
 def transfer_money(message):
-    # Обновляем ник отправителя при переводе
     current_tag = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     update_user_username(message.from_user.id, current_tag)
 
